@@ -1,0 +1,4 @@
+# Submitted claim PDFs contain personal data and signatures: never commit them.
+*.pdf
+*.csv
+.claude/
