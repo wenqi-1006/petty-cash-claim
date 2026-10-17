@@ -28,7 +28,7 @@ The form is at the service's domain (**Settings > Networking**), for example
 To use an address like `claims.lvc-ecopack.com`, add it under **Settings > Networking > Custom Domain** and create the CNAME record Railway shows.
 
 ## How staff use it
-1. **First time:** open the link, choose **Create account**, and enter their company email, full name, department, phone and a password (at least 8 characters).
+1. **First time:** open the link, choose **Create account**, and enter their company email, full name, department, phone and a password (at least 6 characters).
 2. **After that:** choose **Sign in** and enter their email and password. A sign-in lasts 30 days on that browser.
 3. **Change password:** click **Change password** next to their email at the top of the form. This also signs out any other browsers.
 

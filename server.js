@@ -19,7 +19,7 @@ const PORT = Number(process.env.PORT || 8080);
 const EMAIL_DOMAIN = (process.env.EMAIL_DOMAIN || "lvc-ecopack.com").trim().toLowerCase();
 const ADMIN_EMAILS = new Set((process.env.ADMIN_EMAILS || "wenqi@lvc-ecopack.com").split(",").map(s => s.trim().toLowerCase()).filter(Boolean));
 const SESSION_DAYS = 30;
-const MIN_PASSWORD = 8;
+const MIN_PASSWORD = 6;
 const MAX_PDF_BYTES = 50 * 1024 * 1024;
 const COOKIE = "lvc_session";
 
