@@ -1,76 +1,56 @@
 # LVC Petty Cash Claims: setup
 
-The form (`petty-cash-claim.html`) stores claims in **Supabase**, a hosted database with email sign-in.
-One-time setup takes about 20 minutes.
+Everything runs on **Railway**:
+- **petty-cash-claim**: a small Node.js server (`server.js`). It serves the form and handles sign-in, claims, history and the admin summary.
+- **Postgres**: a Railway PostgreSQL database. It stores accounts, sign-in sessions, claims and each claim's PDF.
 
-## 1. Create the Supabase project
-1. Go to https://supabase.com and sign up (the free plan is enough to start).
-2. Click **New project**. Name it `lvc-petty-cash`, set a database password (keep it safe),
-   and choose the region **Southeast Asia (Singapore)**.
+The server creates the database tables itself on start-up (`schema.sql`), so there is no SQL to run by hand.
 
-## 2. Create the database
-1. In the project, open **SQL Editor > New query**.
-2. Paste the whole of `supabase-setup.sql` and click **Run**. It should say "Success".
+## 1. Add the database
+In the Railway project, click **Create > Database > PostgreSQL**. Railway starts a `Postgres` service.
 
-This creates the employee profiles and claims tables, the PDF storage, the security rules and the admin list
-(`wenqi@lvc-ecopack.com`). It also blocks accounts for any email that doesn't end in `@lvc-ecopack.com`.
+## 2. Set the server's variables
+Open the **petty-cash-claim** service > **Variables** and add:
 
-## 3. Make the emails send a code
-Employees create an account once and then sign in with a code sent to their email. Supabase uses two email templates for this, and both must show the code.
-Open **Authentication > Emails (Email Templates)**:
+| Variable | Value |
+|---|---|
+| `DATABASE_URL` | `${{Postgres.DATABASE_URL}}` (a reference to the database; Railway fills in the real value) |
+| `CODE_SECRET` | a long random string (at least 32 characters) |
+| `ADMIN_EMAILS` | `wenqi@lvc-ecopack.com` (separate several with commas) |
+| `EMAIL_DOMAIN` | `lvc-ecopack.com` (optional; this is the default) |
 
-**Confirm signup** (sent when someone creates an account): subject `Confirm your LVC Petty Cash account`, body:
-```html
-<h2>Welcome to LVC Petty Cash</h2>
-<p>Enter this code to confirm your email and create your account:</p>
-<p style="font-size:28px;font-weight:bold;letter-spacing:4px">{{ .Token }}</p>
-<p>It expires in 1 hour. If you didn't ask for this, ignore this email.</p>
-```
+Railway redeploys automatically after you save.
 
-**Magic Link** (sent at every later sign-in): subject `Your LVC Petty Cash sign-in code`, body:
-```html
-<h2>LVC Petty Cash sign-in</h2>
-<p>Your sign-in code is:</p>
-<p style="font-size:28px;font-weight:bold;letter-spacing:4px">{{ .Token }}</p>
-<p>It expires in 1 hour. If you didn't ask for this, ignore this email.</p>
-```
+## 3. Send the sign-in codes by email
+Until this is set up, sign-in codes are **only written to the server log**: **petty-cash-claim > Deployments > View logs**, a line starting `[email not configured]`. That's fine for testing, but staff need real emails.
 
-Also check that **Authentication > Sign In / Providers > Email** is enabled and **Allow new users to sign up** is on.
+Choose one:
 
-## 4. Send emails through the company mailbox (required for real use)
-Supabase's built-in email sender is for testing only. It sends just a few emails per hour.
-Before staff start using the form, open **Authentication > Emails > SMTP Settings**,
-turn on **Custom SMTP** and enter your mail server details. Your IT person or email provider has these.
-- **Microsoft 365:** host `smtp.office365.com`, port `587`, a mailbox such as `noreply@lvc-ecopack.com` and its password.
-- **Google Workspace:** host `smtp.gmail.com`, port `587`, with an app password.
+**A. Resend (recommended; works on every Railway plan)**
+1. Create an account at https://resend.com and add your domain `lvc-ecopack.com` under **Domains**. Add the DNS records it shows at your domain host (your IT person can do this) and wait for **Verified**.
+2. Create an API key (**API Keys > Create**).
+3. Add these variables to **petty-cash-claim**:
+   - `RESEND_API_KEY` = the key
+   - `MAIL_FROM` = `LVC Petty Cash <no-reply@lvc-ecopack.com>`
 
-Then, under **Authentication > Rate Limits**, raise "emails per hour" to a comfortable number (for example 100).
+**B. Company SMTP (Microsoft 365 / Google Workspace)**
+Railway only allows outgoing SMTP on the **Pro** plan. If you have it, add:
+- `SMTP_HOST`: `smtp.office365.com` (Microsoft 365) or `smtp.gmail.com` (Google)
+- `SMTP_PORT`: `587`
+- `SMTP_USER` / `SMTP_PASS`: the sending mailbox and its password (or app password)
+- `MAIL_FROM`: `LVC Petty Cash <no-reply@lvc-ecopack.com>`
 
-## 5. Connect the form
-1. Open **Project Settings > API**. Copy the **Project URL** and the **anon public** key.
-2. Open `petty-cash-claim.html` in a text editor (for example Notepad). Near the top of the `<script>`, replace:
-   ```js
-   const SUPABASE_URL = "https://YOUR-PROJECT.supabase.co";
-   const SUPABASE_ANON_KEY = "YOUR-ANON-KEY";
-   ```
-   with your values, then save.
+## 4. Share the link
+The form is at the service's domain (**Settings > Networking**), for example
+`https://petty-cash-claim-production.up.railway.app`. Every push to the `main` branch on GitHub redeploys it.
 
-   The anon key is meant to be public. The security rules from step 2 decide what each person can see.
+To use an address like `claims.lvc-ecopack.com`, add it under **Settings > Networking > Custom Domain** and create the CNAME record Railway shows.
 
-## 6. Put the form online (Railway)
-The repository is set up to run on Railway as a small website (`Dockerfile`, `Caddyfile`, `railway.json`).
-1. In Railway, click **New Project > Deploy from GitHub repo**. If asked, click **Configure GitHub App** and give Railway access to `wenqi-1006/petty-cash-claim`.
-2. Choose **wenqi-1006/petty-cash-claim**. Railway builds and deploys it, which takes a minute or two.
-3. Open the service, go to **Settings > Networking**, and click **Generate Domain**. This gives a link like `https://petty-cash-claim-production.up.railway.app`.
-4. Share that link with staff. Every push to the `main` branch on GitHub updates the site automatically.
+## How staff use it
+1. **First time:** open the link, choose **Create account**, and enter their company email, full name, department and phone. Then type in the 6-digit code that's emailed to them.
+2. **After that:** choose **Sign in**, enter their email and type in the code. A sign-in lasts 30 days on that browser.
 
-To use your own address, such as `claims.lvc-ecopack.com`: in **Settings > Networking > Custom Domain**, enter it and add the CNAME record Railway shows at your domain host.
-
-Staff open the link in Chrome or Edge, then:
-1. **First time:** choose **Create account**, enter their company email, full name, department and phone, and type in the code that's emailed to them.
-2. **After that:** choose **Sign in**, enter their company email and type in the code.
-
-Their name, department and phone fill in each new claim. If they change these on a claim, their account is updated to match.
+Only `@lvc-ecopack.com` addresses can register. Codes expire after 10 minutes and stop working after 5 wrong tries.
 
 ## Who sees what
 | | Employee | Admin |
@@ -83,9 +63,8 @@ Their name, department and phone fill in each new claim. If they change these on
 | Edit or delete a submitted claim | No | No (it's a permanent record) |
 
 ## Adding or removing admins
-In **SQL Editor**, run:
-```sql
-insert into public.admins (email) values ('someone@lvc-ecopack.com');   -- add
-delete from public.admins where email = 'someone@lvc-ecopack.com';      -- remove
-```
-The person signs out and back in to see the change.
+Change the `ADMIN_EMAILS` variable on the **petty-cash-claim** service, for example
+`wenqi@lvc-ecopack.com,someone@lvc-ecopack.com`. The change applies after the automatic redeploy.
+
+## Backups
+Railway's Postgres service has a **Backups** tab. Turn on scheduled backups there so claims and PDFs can be restored if needed.

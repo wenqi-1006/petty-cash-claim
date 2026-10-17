@@ -8,7 +8,6 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
 <style>
 /* Layout: one matte paper sheet on a grey studio ground, green arcs in the corner, a kraft band carrying the total and submit. */
 :root {
@@ -353,10 +352,7 @@ input[readonly] { color: var(--muted); }
         <p class="lede" id="loginLede">Sign in with your LVC email. We'll send a sign-in code to your inbox.</p>
       </div>
 
-      <div class="login-setup" id="setupNote" hidden>
-        <strong>Setup needed.</strong> This form isn't connected to the claims database yet.
-        Follow <span class="mono">SETUP.md</span> and paste the project URL and key into the top of the script in this file.
-      </div>
+      <div class="login-setup" id="setupNote" role="alert" hidden></div>
 
       <div class="presets" role="group" aria-label="Choose" id="authTabs">
         <button type="button" class="chip" data-auth="signin" aria-pressed="true">Sign in</button>
@@ -407,26 +403,6 @@ input[readonly] { color: var(--muted); }
           <button type="submit" class="btn btn-primary" id="verifyBtn">Sign in</button>
           <button type="button" class="linkbtn" id="resendBtn">Send a new code</button>
           <button type="button" class="linkbtn" id="changeEmailBtn">Use a different email</button>
-        </div>
-      </form>
-
-      <form id="profileForm" novalidate hidden>
-        <p class="lede" style="margin:0">Signed in as <strong id="pfEmail"></strong>. Add your details to finish creating your account.</p>
-        <div class="field">
-          <label for="pfName">Full name <span class="req">*</span></label>
-          <input id="pfName" autocomplete="name" required>
-        </div>
-        <div class="field">
-          <label for="pfDept">Department <span class="req">*</span></label>
-          <input id="pfDept" list="depts" required>
-        </div>
-        <div class="field">
-          <label for="pfPhone">Phone</label>
-          <input id="pfPhone" type="tel" autocomplete="tel">
-        </div>
-        <div class="login-row">
-          <button type="submit" class="btn btn-primary" id="pfSave">Save and continue</button>
-          <button type="button" class="linkbtn" id="pfSignOut">Sign out</button>
         </div>
       </form>
 
@@ -670,12 +646,7 @@ input[readonly] { color: var(--muted); }
 
 <script>
 (() => {
-  // ===== Connection settings: paste from Supabase > Project Settings > API =====
-  const SUPABASE_URL = "https://YOUR-PROJECT.supabase.co";
-  const SUPABASE_ANON_KEY = "YOUR-ANON-KEY";
-  // =============================================================================
-  const EMAIL_DOMAIN = "lvc-ecopack.com";
-  const BUCKET = "claim-pdfs";
+  const EMAIL_DOMAIN = "lvc-ecopack.com";   // the server enforces this too
 
   const $ = (s, r = document) => r.querySelector(s);
   const CATEGORIES = ["Transport & Parking", "Toll", "Fuel", "Meals & Refreshments", "Office Supplies",
@@ -1103,10 +1074,33 @@ input[readonly] { color: var(--muted); }
     setTimeout(() => URL.revokeObjectURL(url), 4000);
   }
 
-  // ---------- Supabase ----------
-  const configured = !/YOUR-/.test(SUPABASE_URL + SUPABASE_ANON_KEY);
-  const sb = configured && window.supabase ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
+  // ---------- server API ----------
   let user = null, isAdmin = false;
+
+  async function api(path, { method = "GET", body } = {}) {
+    let res;
+    try {
+      res = await fetch(path, {
+        method, credentials: "same-origin",
+        headers: body !== undefined ? { "Content-Type": "application/json" } : {},
+        body: body !== undefined ? JSON.stringify(body) : undefined,
+      });
+    } catch (_) { throw new Error("Can't reach the server. Check your internet connection and try again."); }
+    let data = null;
+    try { data = await res.json(); } catch (_) {}
+    if (!res.ok) {
+      const err = new Error((data && data.error) || `The server returned an error (${res.status}).`);
+      err.status = res.status;
+      if (res.status === 401 && user) setTimeout(showLogin, 0);
+      throw err;
+    }
+    return data;
+  }
+  function toBase64(bytes) {
+    let s = "";
+    for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+    return btoa(s);
+  }
 
   const escH = s => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;");
   const fmtWhen = iso => { const d = new Date(iso); return d.toLocaleDateString("en-GB") + ", " + d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }); };
@@ -1115,31 +1109,17 @@ input[readonly] { color: var(--muted); }
   const safeName = s => String(s || "").trim().replace(/[^A-Za-z0-9]+/g, "-").replace(/^-|-$/g, "") || "Employee";
   const pdfName = (ref, name) => `PettyCash_${ref}_${safeName(name)}.pdf`;
 
-  const fromRow = r => ({
-    ref: r.ref, submittedAt: r.submitted_at, name: r.name, dept: r.department, email: r.email, phone: r.phone,
-    purpose: r.purpose, claimDate: r.claim_date, total: Number(r.total_cents), items: r.items || [],
-    receipts: r.receipts || [], pdfPath: r.pdf_path, fname: pdfName(r.ref, r.name),
-  });
-
   async function fetchClaims(ownOnly) {
-    const out = [];
-    for (let from = 0; ; from += 1000) {
-      let q = sb.from("claims").select("*").order("submitted_at", { ascending: false }).range(from, from + 999);
-      if (ownOnly) q = q.eq("user_id", user.id);
-      const { data, error } = await q;
-      if (error) throw error;
-      out.push(...data.map(fromRow));
-      if (data.length < 1000) break;
-    }
-    return out;
+    const rows = await api(ownOnly ? "/api/claims" : "/api/claims?scope=all");
+    return rows.map(r => ({ ...r, items: r.items || [], receipts: r.receipts || [], fname: pdfName(r.ref, r.name) }));
   }
   async function downloadClaimPdf(rec, btn) {
     const label = btn.textContent;
     btn.disabled = true; btn.textContent = "Opening…";
     try {
-      const { data, error } = await sb.storage.from(BUCKET).download(rec.pdfPath);
-      if (error) throw error;
-      download(await data.arrayBuffer(), rec.fname);
+      const res = await fetch(`/api/claims/${encodeURIComponent(rec.ref)}/pdf`, { credentials: "same-origin" });
+      if (!res.ok) throw new Error(String(res.status));
+      download(await res.arrayBuffer(), rec.fname);
       btn.textContent = label;
     } catch (_) { btn.textContent = "Couldn't download. Try again"; }
     finally { btn.disabled = false; }
@@ -1175,7 +1155,7 @@ input[readonly] { color: var(--muted); }
             <span>Claimed by ${escH(r.name)} (${escH(r.email)})${r.dept ? ", " + escH(r.dept) : ""}${r.phone ? " · " + escH(r.phone) : ""}</span>
             <span>Claim date ${fmtDate(r.claimDate)} · Receipts: ${r.receipts.length ? r.receipts.map(escH).join(", ") : "none"}</span>
           </div>
-          ${r.pdfPath ? `<div class="actions"><button type="button" class="btn btn-primary" data-act="pdf">Download claim PDF</button></div>` : ""}
+          ${r.hasPdf ? `<div class="actions"><button type="button" class="btn btn-primary" data-act="pdf">Download claim PDF</button></div>` : ""}
         </div>
       </details>`;
     }
@@ -1385,25 +1365,20 @@ input[readonly] { color: var(--muted); }
       const { bytes, pages } = await buildPdf(ref);
       if (bytes.length > 50 * 1024 * 1024) throw new Error("The combined PDF is larger than 50 MB. Re-scan the receipts at a lower resolution and submit again.");
       const fname = pdfName(ref, $("#name").value);
-      const path = `${user.id}/${ref}.pdf`;
-
-      const up = await sb.storage.from(BUCKET).upload(path, new Blob([bytes], { type: "application/pdf" }), { contentType: "application/pdf", upsert: false });
-      if (up.error) throw new Error(`The claim PDF couldn't be uploaded (${up.error.message}). Check your internet connection and submit again.`);
-
       const total = totalCents();
-      const ins = await sb.from("claims").insert({
-        ref, user_id: user.id, email: user.email,
-        name: $("#name").value.trim(), department: $("#dept").value.trim(), phone: $("#phone").value.trim() || null,
-        purpose: $("#purpose").value.trim(), claim_date: $("#claimDate").value, total_cents: total,
-        items: items.map(i => ({ date: i.date, receipt: i.receipt.trim(), category: i.category, desc: i.desc.trim(), cents: toCents(i.amount) })),
-        receipts: files.map(x => x.file.name), pdf_path: path,
-      });
-      if (ins.error) throw new Error(`The claim couldn't be saved (${ins.error.message}). Nothing was submitted; please try again.`);
+      try {
+        await api("/api/claims", { method: "POST", body: {
+          ref, name: $("#name").value.trim(), department: $("#dept").value.trim(), phone: $("#phone").value.trim(),
+          purpose: $("#purpose").value.trim(), claimDate: $("#claimDate").value,
+          items: items.map(i => ({ date: i.date, receipt: i.receipt.trim(), category: i.category, desc: i.desc.trim(), cents: toCents(i.amount) })),
+          receipts: files.map(x => x.file.name), pdfBase64: toBase64(bytes),
+        } });
+      } catch (err) { throw new Error(`The claim couldn't be submitted: ${err.message} Nothing was saved; please try again.`); }
 
       lastPdf = { bytes, fname };
       download(bytes, fname);
       try { localStorage.removeItem(DRAFT_KEY); } catch (_) {}
-      syncProfile();
+      if (profile) profile = { ...profile, fullName: $("#name").value.trim(), department: $("#dept").value.trim(), phone: $("#phone").value.trim() || null };
       refreshCount();
       $("#doneInfo").innerHTML = [["Reference", ref], ["Claimant", $("#name").value], ["Items", items.length], ["Total", "RM " + money(total)],
         ["Receipts", files.length + (files.length === 1 ? " file" : " files")], ["PDF", pages + " pages"]]
@@ -1426,6 +1401,7 @@ input[readonly] { color: var(--muted); }
 
   // ---------- sign-in & create account ----------
   const loginMsg = (t, err) => { const m = $("#loginMsg"); m.textContent = t || ""; m.classList.toggle("err", !!err); };
+  // The server re-checks the email domain; this is just for an early, friendly message.
   const companyRe = new RegExp(`^[^\\s@]+@${EMAIL_DOMAIN.replace(/\./g, "\\.")}$`);
   let pendingEmail = "", pendingProfile = null, authMode = "signin", profile = null;
 
@@ -1439,7 +1415,7 @@ input[readonly] { color: var(--muted); }
     $("#authTabs").hidden = false;
     $("#emailForm").hidden = m !== "signin";
     $("#signupForm").hidden = m !== "signup";
-    $("#codeForm").hidden = true; $("#profileForm").hidden = true;
+    $("#codeForm").hidden = true;
     $("#loginTitle").innerHTML = m === "signup" ? "Create your <b>account</b>" : "Petty Cash <b>Claims</b>";
     $("#loginLede").textContent = LEDE[m];
     if (m === "signup" && !$("#suEmail").value) $("#suEmail").value = $("#loginEmail").value;
@@ -1467,19 +1443,15 @@ input[readonly] { color: var(--muted); }
     return ok;
   }
 
-  async function sendCode(email, create) {
+  async function sendCode(email, mode, profileData) {
     loginMsg("Sending code…");
-    const { error } = await sb.auth.signInWithOtp({ email, options: { shouldCreateUser: create } });
-    if (error) {
-      const m = error.message || "";
-      const msg = /rate|security purposes/i.test(m) ? "Too many codes requested. Wait a minute, then try again."
-        : /signups? not allowed|not found/i.test(m) ? "There's no account for this email yet. Choose Create account to register."
-        : /database|saving new user/i.test(m) ? `Only @${EMAIL_DOMAIN} email addresses can be used.`
-        : `The code couldn't be sent (${m}).`;
-      loginMsg(msg, true); return false;
-    }
-    loginMsg("");
-    return true;
+    try {
+      const r = await api("/api/auth/request-code", { method: "POST", body: { email, mode, profile: profileData } });
+      const already = mode === "signup" && r.mode === "signin";
+      authMode = r.mode;
+      loginMsg(already ? "You already have an account, so we sent you a sign-in code." : "");
+      return true;
+    } catch (err) { loginMsg(err.message, true); return false; }
   }
   function showCodeStep(email) {
     pendingEmail = email;
@@ -1492,73 +1464,42 @@ input[readonly] { color: var(--muted); }
 
   $("#emailForm").addEventListener("submit", async e => {
     e.preventDefault();
-    if (!sb) return;
     const email = checkEmail($("#loginEmail")); if (!email) return;
     pendingProfile = null;
     const b = $("#sendCodeBtn"); b.disabled = true;
-    const ok = await sendCode(email, false);
+    const ok = await sendCode(email, "signin");
     b.disabled = false;
     if (ok) showCodeStep(email);
   });
   $("#signupForm").addEventListener("submit", async e => {
     e.preventDefault();
-    if (!sb) return;
     const email = checkEmail($("#suEmail")); if (!email) return;
     if (!requireFilled(["suName", "suDept"])) { loginMsg("Enter your full name and department.", true); return; }
-    pendingProfile = { full_name: $("#suName").value.trim(), department: $("#suDept").value.trim(), phone: $("#suPhone").value.trim() };
+    pendingProfile = { fullName: $("#suName").value.trim(), department: $("#suDept").value.trim(), phone: $("#suPhone").value.trim() };
     const b = $("#signupBtn"); b.disabled = true;
-    const ok = await sendCode(email, true);
+    const ok = await sendCode(email, "signup", pendingProfile);
     b.disabled = false;
     if (ok) showCodeStep(email);
   });
   $("#codeForm").addEventListener("submit", async e => {
     e.preventDefault();
-    const token = $("#loginCode").value.replace(/\D/g, "");
-    if (token.length < 6) { $("#loginCode").classList.add("invalid"); loginMsg("Enter the code from the email.", true); return; }
+    const code = $("#loginCode").value.replace(/\D/g, "");
+    if (code.length !== 6) { $("#loginCode").classList.add("invalid"); loginMsg("Enter the 6-digit code from the email.", true); return; }
     const b = $("#verifyBtn"); b.disabled = true; loginMsg(authMode === "signup" ? "Creating your account…" : "Signing in…");
-    const { error } = await sb.auth.verifyOtp({ email: pendingEmail, token, type: "email" });
-    b.disabled = false;
-    if (error) { $("#loginCode").classList.add("invalid"); loginMsg("That code is wrong or has expired. Check the latest email, or send a new code.", true); return; }
-  });
-  ["loginCode", "loginEmail", "suEmail", "suName", "suDept", "pfName", "pfDept"].forEach(id => $("#" + id).addEventListener("input", e => e.target.classList.remove("invalid")));
-  $("#resendBtn").addEventListener("click", async () => { if (await sendCode(pendingEmail, authMode === "signup")) loginMsg("A new code is on its way."); });
-  $("#changeEmailBtn").addEventListener("click", () => setAuthMode(authMode));
-  $("#signOutBtn").addEventListener("click", () => sb.auth.signOut());
-  $("#pfSignOut").addEventListener("click", () => sb.auth.signOut());
-
-  // ---------- profile ----------
-  async function loadProfile() {
-    const { data, error } = await sb.from("profiles").select("*").eq("user_id", user.id).maybeSingle();
-    if (error) throw error;
-    return data;
-  }
-  async function saveProfile(p) {
-    const { data, error } = await sb.from("profiles").upsert({
-      user_id: user.id, email: user.email, full_name: p.full_name, department: p.department,
-      phone: p.phone || null, updated_at: new Date().toISOString(),
-    }).select().single();
-    if (error) throw error;
-    return data;
-  }
-  function showProfileStep() {
-    $("#app").hidden = true; $("#login").hidden = false;
-    $("#authTabs").hidden = true; $("#emailForm").hidden = true; $("#signupForm").hidden = true; $("#codeForm").hidden = true;
-    $("#profileForm").hidden = false;
-    $("#loginTitle").innerHTML = "Finish your <b>account</b>";
-    $("#loginLede").textContent = "Your name and department fill in each claim for you.";
-    $("#pfEmail").textContent = user.email;
-    $("#pfName").focus();
-  }
-  $("#profileForm").addEventListener("submit", async e => {
-    e.preventDefault();
-    if (!requireFilled(["pfName", "pfDept"])) { loginMsg("Enter your full name and department.", true); return; }
-    const b = $("#pfSave"); b.disabled = true; loginMsg("Saving…");
     try {
-      profile = await saveProfile({ full_name: $("#pfName").value.trim(), department: $("#pfDept").value.trim(), phone: $("#pfPhone").value.trim() });
-      loginMsg("");
-      enterApp();
-    } catch (err) { loginMsg(`Your details couldn't be saved (${err.message || err}). Try again.`, true); }
-    finally { b.disabled = false; }
+      const me = await api("/api/auth/verify", { method: "POST", body: { email: pendingEmail, code } });
+      loginMsg(""); pendingProfile = null;
+      signedIn(me);
+    } catch (err) {
+      $("#loginCode").classList.add("invalid"); loginMsg(err.message, true);
+    } finally { b.disabled = false; }
+  });
+  ["loginCode", "loginEmail", "suEmail", "suName", "suDept"].forEach(id => $("#" + id).addEventListener("input", e => e.target.classList.remove("invalid")));
+  $("#resendBtn").addEventListener("click", async () => { if (await sendCode(pendingEmail, authMode, pendingProfile)) loginMsg("A new code is on its way."); });
+  $("#changeEmailBtn").addEventListener("click", () => setAuthMode(authMode));
+  $("#signOutBtn").addEventListener("click", async () => {
+    try { await api("/api/auth/logout", { method: "POST", body: {} }); } catch (_) {}
+    showLogin();
   });
 
   function showLogin() {
@@ -1567,65 +1508,49 @@ input[readonly] { color: var(--muted); }
     document.body.style.overflow = "";
     $("#login").hidden = false;
     // Don't leave the last person's details on a shared computer.
-    ["loginEmail", "suEmail", "suName", "suDept", "suPhone", "pfName", "pfDept", "pfPhone", "loginCode"].forEach(id => $("#" + id).value = "");
+    ["loginEmail", "suEmail", "suName", "suDept", "suPhone", "loginCode"].forEach(id => $("#" + id).value = "");
     setAuthMode("signin");
   }
 
-  async function onSignedIn(session) {
-    if (user && user.id === session.user.id) return;
-    user = session.user;
-    loginMsg("Loading your account…");
-    try { profile = await loadProfile(); } catch (_) { profile = null; }
-    if (!profile && pendingProfile) { try { profile = await saveProfile(pendingProfile); } catch (_) {} }
-    pendingProfile = null;
-    loginMsg("");
-    if (!profile) { showProfileStep(); return; }
+  function signedIn(me) {
+    user = { email: me.email };
+    profile = me;
+    isAdmin = me.isAdmin === true;
     enterApp();
   }
 
-  async function enterApp() {
+  function enterApp() {
     $("#login").hidden = true; $("#app").hidden = false;
     $("#whoEmail").textContent = user.email;
     $("#email").value = user.email;
 
-    // Fresh form for this person, then their own draft, then their profile details.
+    // Fresh form for this person, then their own draft, then their account details.
     DRAFT_KEY = "lvc-petty-cash-draft:" + user.email.toLowerCase();
     FIELDS.forEach(f => $("#" + f).value = "");
     $("#declare").checked = false; sig.clear();
     items = []; files = []; lastPdf = null;
     loadDraft();
-    if (!$("#name").value) $("#name").value = profile.full_name;
-    if (!$("#dept").value) $("#dept").value = profile.department;
+    if (!$("#name").value) $("#name").value = profile.fullName || "";
+    if (!$("#dept").value) $("#dept").value = profile.department || "";
     if (!$("#phone").value && profile.phone) $("#phone").value = profile.phone;
     $("#claimDateLabel").textContent = fmtDate($("#claimDate").value);
     renderItems(); renderFiles(); hideErrors();
     sig.setup();
 
-    try { const { data } = await sb.rpc("is_admin"); isAdmin = data === true; } catch (_) { isAdmin = false; }
     $("#adminBtn").hidden = !isAdmin;
     refreshCount();
-  }
-
-  // Keep the profile in step with the details used on the latest claim.
-  function syncProfile() {
-    const p = { full_name: $("#name").value.trim(), department: $("#dept").value.trim(), phone: $("#phone").value.trim() };
-    if (profile && p.full_name === profile.full_name && p.department === profile.department && (p.phone || null) === (profile.phone || null)) return;
-    saveProfile(p).then(d => { profile = d; }).catch(() => {});
   }
 
   // ---------- init ----------
   $("#claimDate").value = today();
   items = [newItem()];
-  if (!sb) {
-    $("#setupNote").hidden = false;
-    if (configured && !window.supabase) $("#setupNote").innerHTML = "<strong>Can't connect.</strong> The sign-in service didn't load. Check your internet connection and reload the page.";
-    document.querySelectorAll("#emailForm input, #emailForm button, #signupForm input, #signupForm button").forEach(el => el.disabled = true);
-  } else {
-    sb.auth.onAuthStateChange((event, session) => {
-      // Defer: Supabase recommends not awaiting other calls inside this callback.
-      setTimeout(() => { if (session && session.user) onSignedIn(session); else showLogin(); }, 0);
-    });
-  }
+  api("/api/me").then(signedIn).catch(err => {
+    showLogin();
+    if (err.status !== 401) {
+      $("#setupNote").hidden = false;
+      $("#setupNote").innerHTML = "<strong>Can't reach the claims server.</strong> Check your internet connection and reload the page. If this keeps happening, tell the admin.";
+    }
+  });
 })();
 </script>
 </body>
