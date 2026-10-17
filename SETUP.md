@@ -12,12 +12,22 @@ One-time setup takes about 20 minutes.
 1. In the project, open **SQL Editor > New query**.
 2. Paste the whole of `supabase-setup.sql` and click **Run**. It should say "Success".
 
-This creates the claims table, the PDF storage, the security rules and the admin list
-(`wenqi@lvc-ecopack.com`). It also blocks sign-in from any email that doesn't end in `@lvc-ecopack.com`.
+This creates the employee profiles and claims tables, the PDF storage, the security rules and the admin list
+(`wenqi@lvc-ecopack.com`). It also blocks accounts for any email that doesn't end in `@lvc-ecopack.com`.
 
-## 3. Make the sign-in email send a code
-Open **Authentication > Emails (Email Templates) > Magic Link** and replace the message body with:
+## 3. Make the emails send a code
+Employees create an account once and then sign in with a code sent to their email. Supabase uses two email templates for this, and both must show the code.
+Open **Authentication > Emails (Email Templates)**:
 
+**Confirm signup** (sent when someone creates an account): subject `Confirm your LVC Petty Cash account`, body:
+```html
+<h2>Welcome to LVC Petty Cash</h2>
+<p>Enter this code to confirm your email and create your account:</p>
+<p style="font-size:28px;font-weight:bold;letter-spacing:4px">{{ .Token }}</p>
+<p>It expires in 1 hour. If you didn't ask for this, ignore this email.</p>
+```
+
+**Magic Link** (sent at every later sign-in): subject `Your LVC Petty Cash sign-in code`, body:
 ```html
 <h2>LVC Petty Cash sign-in</h2>
 <p>Your sign-in code is:</p>
@@ -25,7 +35,7 @@ Open **Authentication > Emails (Email Templates) > Magic Link** and replace the 
 <p>It expires in 1 hour. If you didn't ask for this, ignore this email.</p>
 ```
 
-Set the subject to `Your LVC Petty Cash sign-in code` and save.
+Also check that **Authentication > Sign In / Providers > Email** is enabled and **Allow new users to sign up** is on.
 
 ## 4. Send emails through the company mailbox (required for real use)
 Supabase's built-in email sender is for testing only. It sends just a few emails per hour.
@@ -49,11 +59,16 @@ Then, under **Authentication > Rate Limits**, raise "emails per hour" to a comfo
 
 ## 6. Share the form
 Give staff the `petty-cash-claim.html` file, for example on a shared drive, or host it on your website or intranet.
-Staff open it in Chrome or Edge and sign in with their company email.
+Staff open it in Chrome or Edge, then:
+1. **First time:** choose **Create account**, enter their company email, full name, department and phone, and type in the code that's emailed to them.
+2. **After that:** choose **Sign in**, enter their company email and type in the code.
+
+Their name, department and phone fill in each new claim. If they change these on a claim, their account is updated to match.
 
 ## Who sees what
 | | Employee | Admin |
 |---|---|---|
+| Create an account with a company email | Yes | Yes |
 | Submit claims | Yes | Yes |
 | See their own claims in "My history" | Yes | Yes |
 | See everyone's claims, summaries and PDFs in "Admin" | No | Yes |

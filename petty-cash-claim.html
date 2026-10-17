@@ -349,8 +349,8 @@ input[readonly] { color: var(--muted); }
             <div class="brand-sub">Finance · Petty Cash</div>
           </div>
         </div>
-        <h1>Petty Cash <b>Claims</b></h1>
-        <p class="lede">Sign in with your LVC email. We'll send a sign-in code to your inbox.</p>
+        <h1 id="loginTitle">Petty Cash <b>Claims</b></h1>
+        <p class="lede" id="loginLede">Sign in with your LVC email. We'll send a sign-in code to your inbox.</p>
       </div>
 
       <div class="login-setup" id="setupNote" hidden>
@@ -358,24 +358,75 @@ input[readonly] { color: var(--muted); }
         Follow <span class="mono">SETUP.md</span> and paste the project URL and key into the top of the script in this file.
       </div>
 
+      <div class="presets" role="group" aria-label="Choose" id="authTabs">
+        <button type="button" class="chip" data-auth="signin" aria-pressed="true">Sign in</button>
+        <button type="button" class="chip" data-auth="signup" aria-pressed="false">Create account</button>
+      </div>
+
       <form id="emailForm" novalidate>
         <div class="field">
           <label for="loginEmail">Company email</label>
           <input id="loginEmail" type="email" autocomplete="email" placeholder="name@lvc-ecopack.com" required>
         </div>
-        <div><button type="submit" class="btn btn-primary" id="sendCodeBtn">Send sign-in code</button></div>
+        <div class="login-row">
+          <button type="submit" class="btn btn-primary" id="sendCodeBtn">Send sign-in code</button>
+          <span>New here? <button type="button" class="linkbtn" data-auth="signup">Create an account</button></span>
+        </div>
+      </form>
+
+      <form id="signupForm" novalidate hidden>
+        <div class="field">
+          <label for="suEmail">Company email <span class="req">*</span></label>
+          <input id="suEmail" type="email" autocomplete="email" placeholder="name@lvc-ecopack.com" required>
+        </div>
+        <div class="field">
+          <label for="suName">Full name <span class="req">*</span></label>
+          <input id="suName" autocomplete="name" required>
+        </div>
+        <div class="field">
+          <label for="suDept">Department <span class="req">*</span></label>
+          <input id="suDept" list="depts" required>
+        </div>
+        <div class="field">
+          <label for="suPhone">Phone</label>
+          <input id="suPhone" type="tel" autocomplete="tel">
+        </div>
+        <div class="login-row">
+          <button type="submit" class="btn btn-primary" id="signupBtn">Create account</button>
+          <span>Already registered? <button type="button" class="linkbtn" data-auth="signin">Sign in</button></span>
+        </div>
       </form>
 
       <form id="codeForm" novalidate hidden>
         <p class="lede" style="margin:0">We sent a code to <strong id="codeEmail"></strong>. It may take a minute to arrive. Check your junk folder too.</p>
         <div class="field">
-          <label for="loginCode">Sign-in code</label>
+          <label for="loginCode">Code from the email</label>
           <input id="loginCode" class="code-input" inputmode="numeric" autocomplete="one-time-code" maxlength="10" required>
         </div>
         <div class="login-row">
           <button type="submit" class="btn btn-primary" id="verifyBtn">Sign in</button>
           <button type="button" class="linkbtn" id="resendBtn">Send a new code</button>
           <button type="button" class="linkbtn" id="changeEmailBtn">Use a different email</button>
+        </div>
+      </form>
+
+      <form id="profileForm" novalidate hidden>
+        <p class="lede" style="margin:0">Signed in as <strong id="pfEmail"></strong>. Add your details to finish creating your account.</p>
+        <div class="field">
+          <label for="pfName">Full name <span class="req">*</span></label>
+          <input id="pfName" autocomplete="name" required>
+        </div>
+        <div class="field">
+          <label for="pfDept">Department <span class="req">*</span></label>
+          <input id="pfDept" list="depts" required>
+        </div>
+        <div class="field">
+          <label for="pfPhone">Phone</label>
+          <input id="pfPhone" type="tel" autocomplete="tel">
+        </div>
+        <div class="login-row">
+          <button type="submit" class="btn btn-primary" id="pfSave">Save and continue</button>
+          <button type="button" class="linkbtn" id="pfSignOut">Sign out</button>
         </div>
       </form>
 
@@ -1352,6 +1403,7 @@ input[readonly] { color: var(--muted); }
       lastPdf = { bytes, fname };
       download(bytes, fname);
       try { localStorage.removeItem(DRAFT_KEY); } catch (_) {}
+      syncProfile();
       refreshCount();
       $("#doneInfo").innerHTML = [["Reference", ref], ["Claimant", $("#name").value], ["Items", items.length], ["Total", "RM " + money(total)],
         ["Receipts", files.length + (files.length === 1 ? " file" : " files")], ["PDF", pages + " pages"]]
@@ -1372,92 +1424,193 @@ input[readonly] { color: var(--muted); }
     else closeDone();
   });
 
-  // ---------- sign-in ----------
+  // ---------- sign-in & create account ----------
   const loginMsg = (t, err) => { const m = $("#loginMsg"); m.textContent = t || ""; m.classList.toggle("err", !!err); };
-  let pendingEmail = "";
+  const companyRe = new RegExp(`^[^\\s@]+@${EMAIL_DOMAIN.replace(/\./g, "\\.")}$`);
+  let pendingEmail = "", pendingProfile = null, authMode = "signin", profile = null;
 
-  async function sendCode(email) {
+  const LEDE = {
+    signin: "Sign in with your LVC email. We'll send a sign-in code to your inbox.",
+    signup: "Register once with your LVC email. We'll send a code to confirm the address is yours.",
+  };
+  function setAuthMode(m) {
+    authMode = m;
+    document.querySelectorAll("#authTabs [data-auth]").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.auth === m)));
+    $("#authTabs").hidden = false;
+    $("#emailForm").hidden = m !== "signin";
+    $("#signupForm").hidden = m !== "signup";
+    $("#codeForm").hidden = true; $("#profileForm").hidden = true;
+    $("#loginTitle").innerHTML = m === "signup" ? "Create your <b>account</b>" : "Petty Cash <b>Claims</b>";
+    $("#loginLede").textContent = LEDE[m];
+    if (m === "signup" && !$("#suEmail").value) $("#suEmail").value = $("#loginEmail").value;
+    if (m === "signin" && !$("#loginEmail").value) $("#loginEmail").value = $("#suEmail").value;
+    loginMsg("");
+  }
+  document.querySelectorAll("[data-auth]").forEach(b => b.addEventListener("click", () => {
+    setAuthMode(b.dataset.auth);
+    (b.dataset.auth === "signup" ? $("#suEmail") : $("#loginEmail")).focus();
+  }));
+
+  function checkEmail(input) {
+    const email = input.value.trim().toLowerCase();
+    if (!companyRe.test(email)) {
+      input.classList.add("invalid");
+      loginMsg(`Use your company email address ending in @${EMAIL_DOMAIN}.`, true);
+      return null;
+    }
+    input.classList.remove("invalid");
+    return email;
+  }
+  function requireFilled(ids) {
+    let ok = true;
+    ids.forEach(id => { const el = $("#" + id); const bad = !el.value.trim(); el.classList.toggle("invalid", bad); if (bad) ok = false; });
+    return ok;
+  }
+
+  async function sendCode(email, create) {
     loginMsg("Sending code…");
-    const { error } = await sb.auth.signInWithOtp({ email, options: { shouldCreateUser: true } });
+    const { error } = await sb.auth.signInWithOtp({ email, options: { shouldCreateUser: create } });
     if (error) {
-      const msg = /rate|security purposes/i.test(error.message) ? "Too many codes requested. Wait a minute, then try again."
-        : /database|saving new user/i.test(error.message) ? `Only @${EMAIL_DOMAIN} email addresses can sign in.`
-        : `The code couldn't be sent (${error.message}).`;
+      const m = error.message || "";
+      const msg = /rate|security purposes/i.test(m) ? "Too many codes requested. Wait a minute, then try again."
+        : /signups? not allowed|not found/i.test(m) ? "There's no account for this email yet. Choose Create account to register."
+        : /database|saving new user/i.test(m) ? `Only @${EMAIL_DOMAIN} email addresses can be used.`
+        : `The code couldn't be sent (${m}).`;
       loginMsg(msg, true); return false;
     }
     loginMsg("");
     return true;
   }
+  function showCodeStep(email) {
+    pendingEmail = email;
+    $("#codeEmail").textContent = email;
+    $("#authTabs").hidden = true; $("#emailForm").hidden = true; $("#signupForm").hidden = true;
+    $("#codeForm").hidden = false;
+    $("#verifyBtn").textContent = authMode === "signup" ? "Confirm and create account" : "Sign in";
+    $("#loginCode").value = ""; $("#loginCode").focus();
+  }
 
   $("#emailForm").addEventListener("submit", async e => {
     e.preventDefault();
     if (!sb) return;
-    const email = $("#loginEmail").value.trim().toLowerCase();
-    if (!new RegExp(`^[^\\s@]+@${EMAIL_DOMAIN.replace(/\./g, "\\.")}$`).test(email)) {
-      $("#loginEmail").classList.add("invalid");
-      loginMsg(`Use your company email address ending in @${EMAIL_DOMAIN}.`, true); return;
-    }
-    $("#loginEmail").classList.remove("invalid");
+    const email = checkEmail($("#loginEmail")); if (!email) return;
+    pendingProfile = null;
     const b = $("#sendCodeBtn"); b.disabled = true;
-    const ok = await sendCode(email);
+    const ok = await sendCode(email, false);
     b.disabled = false;
-    if (!ok) return;
-    pendingEmail = email;
-    $("#codeEmail").textContent = email;
-    $("#emailForm").hidden = true; $("#codeForm").hidden = false;
-    $("#loginCode").value = ""; $("#loginCode").focus();
+    if (ok) showCodeStep(email);
+  });
+  $("#signupForm").addEventListener("submit", async e => {
+    e.preventDefault();
+    if (!sb) return;
+    const email = checkEmail($("#suEmail")); if (!email) return;
+    if (!requireFilled(["suName", "suDept"])) { loginMsg("Enter your full name and department.", true); return; }
+    pendingProfile = { full_name: $("#suName").value.trim(), department: $("#suDept").value.trim(), phone: $("#suPhone").value.trim() };
+    const b = $("#signupBtn"); b.disabled = true;
+    const ok = await sendCode(email, true);
+    b.disabled = false;
+    if (ok) showCodeStep(email);
   });
   $("#codeForm").addEventListener("submit", async e => {
     e.preventDefault();
     const token = $("#loginCode").value.replace(/\D/g, "");
     if (token.length < 6) { $("#loginCode").classList.add("invalid"); loginMsg("Enter the code from the email.", true); return; }
-    const b = $("#verifyBtn"); b.disabled = true; loginMsg("Signing in…");
+    const b = $("#verifyBtn"); b.disabled = true; loginMsg(authMode === "signup" ? "Creating your account…" : "Signing in…");
     const { error } = await sb.auth.verifyOtp({ email: pendingEmail, token, type: "email" });
     b.disabled = false;
     if (error) { $("#loginCode").classList.add("invalid"); loginMsg("That code is wrong or has expired. Check the latest email, or send a new code.", true); return; }
-    loginMsg("");
   });
-  $("#loginCode").addEventListener("input", e => e.target.classList.remove("invalid"));
-  $("#resendBtn").addEventListener("click", async () => { if (await sendCode(pendingEmail)) loginMsg("A new code is on its way."); });
-  $("#changeEmailBtn").addEventListener("click", () => { $("#codeForm").hidden = true; $("#emailForm").hidden = false; loginMsg(""); $("#loginEmail").focus(); });
-  $("#signOutBtn").addEventListener("click", async () => { await sb.auth.signOut(); });
+  ["loginCode", "loginEmail", "suEmail", "suName", "suDept", "pfName", "pfDept"].forEach(id => $("#" + id).addEventListener("input", e => e.target.classList.remove("invalid")));
+  $("#resendBtn").addEventListener("click", async () => { if (await sendCode(pendingEmail, authMode === "signup")) loginMsg("A new code is on its way."); });
+  $("#changeEmailBtn").addEventListener("click", () => setAuthMode(authMode));
+  $("#signOutBtn").addEventListener("click", () => sb.auth.signOut());
+  $("#pfSignOut").addEventListener("click", () => sb.auth.signOut());
+
+  // ---------- profile ----------
+  async function loadProfile() {
+    const { data, error } = await sb.from("profiles").select("*").eq("user_id", user.id).maybeSingle();
+    if (error) throw error;
+    return data;
+  }
+  async function saveProfile(p) {
+    const { data, error } = await sb.from("profiles").upsert({
+      user_id: user.id, email: user.email, full_name: p.full_name, department: p.department,
+      phone: p.phone || null, updated_at: new Date().toISOString(),
+    }).select().single();
+    if (error) throw error;
+    return data;
+  }
+  function showProfileStep() {
+    $("#app").hidden = true; $("#login").hidden = false;
+    $("#authTabs").hidden = true; $("#emailForm").hidden = true; $("#signupForm").hidden = true; $("#codeForm").hidden = true;
+    $("#profileForm").hidden = false;
+    $("#loginTitle").innerHTML = "Finish your <b>account</b>";
+    $("#loginLede").textContent = "Your name and department fill in each claim for you.";
+    $("#pfEmail").textContent = user.email;
+    $("#pfName").focus();
+  }
+  $("#profileForm").addEventListener("submit", async e => {
+    e.preventDefault();
+    if (!requireFilled(["pfName", "pfDept"])) { loginMsg("Enter your full name and department.", true); return; }
+    const b = $("#pfSave"); b.disabled = true; loginMsg("Saving…");
+    try {
+      profile = await saveProfile({ full_name: $("#pfName").value.trim(), department: $("#pfDept").value.trim(), phone: $("#pfPhone").value.trim() });
+      loginMsg("");
+      enterApp();
+    } catch (err) { loginMsg(`Your details couldn't be saved (${err.message || err}). Try again.`, true); }
+    finally { b.disabled = false; }
+  });
 
   function showLogin() {
-    user = null; isAdmin = false;
+    user = null; isAdmin = false; profile = null;
     $("#app").hidden = true; $("#admin").hidden = true; $("#history").hidden = true; $("#done").hidden = true;
     document.body.style.overflow = "";
     $("#login").hidden = false;
-    $("#codeForm").hidden = true; $("#emailForm").hidden = false; loginMsg("");
+    // Don't leave the last person's details on a shared computer.
+    ["loginEmail", "suEmail", "suName", "suDept", "suPhone", "pfName", "pfDept", "pfPhone", "loginCode"].forEach(id => $("#" + id).value = "");
+    setAuthMode("signin");
   }
 
   async function onSignedIn(session) {
     if (user && user.id === session.user.id) return;
     user = session.user;
+    loginMsg("Loading your account…");
+    try { profile = await loadProfile(); } catch (_) { profile = null; }
+    if (!profile && pendingProfile) { try { profile = await saveProfile(pendingProfile); } catch (_) {} }
+    pendingProfile = null;
+    loginMsg("");
+    if (!profile) { showProfileStep(); return; }
+    enterApp();
+  }
+
+  async function enterApp() {
     $("#login").hidden = true; $("#app").hidden = false;
     $("#whoEmail").textContent = user.email;
     $("#email").value = user.email;
 
-    // Fresh form for this person, then their own draft.
+    // Fresh form for this person, then their own draft, then their profile details.
     DRAFT_KEY = "lvc-petty-cash-draft:" + user.email.toLowerCase();
     FIELDS.forEach(f => $("#" + f).value = "");
     $("#declare").checked = false; sig.clear();
     items = []; files = []; lastPdf = null;
     loadDraft();
+    if (!$("#name").value) $("#name").value = profile.full_name;
+    if (!$("#dept").value) $("#dept").value = profile.department;
+    if (!$("#phone").value && profile.phone) $("#phone").value = profile.phone;
     $("#claimDateLabel").textContent = fmtDate($("#claimDate").value);
     renderItems(); renderFiles(); hideErrors();
     sig.setup();
 
     try { const { data } = await sb.rpc("is_admin"); isAdmin = data === true; } catch (_) { isAdmin = false; }
     $("#adminBtn").hidden = !isAdmin;
+    refreshCount();
+  }
 
-    await refreshCount();
-    // Fill in the claimant's details from their last claim.
-    const last = histCache[0];
-    if (last) {
-      if (!$("#name").value) $("#name").value = last.name;
-      if (!$("#dept").value) $("#dept").value = last.dept;
-      if (!$("#phone").value && last.phone) $("#phone").value = last.phone;
-    }
+  // Keep the profile in step with the details used on the latest claim.
+  function syncProfile() {
+    const p = { full_name: $("#name").value.trim(), department: $("#dept").value.trim(), phone: $("#phone").value.trim() };
+    if (profile && p.full_name === profile.full_name && p.department === profile.department && (p.phone || null) === (profile.phone || null)) return;
+    saveProfile(p).then(d => { profile = d; }).catch(() => {});
   }
 
   // ---------- init ----------
@@ -1466,7 +1619,7 @@ input[readonly] { color: var(--muted); }
   if (!sb) {
     $("#setupNote").hidden = false;
     if (configured && !window.supabase) $("#setupNote").innerHTML = "<strong>Can't connect.</strong> The sign-in service didn't load. Check your internet connection and reload the page.";
-    $("#emailForm").querySelectorAll("input,button").forEach(el => el.disabled = true);
+    document.querySelectorAll("#emailForm input, #emailForm button, #signupForm input, #signupForm button").forEach(el => el.disabled = true);
   } else {
     sb.auth.onAuthStateChange((event, session) => {
       // Defer: Supabase recommends not awaiting other calls inside this callback.

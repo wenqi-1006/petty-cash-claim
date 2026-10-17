@@ -42,7 +42,35 @@ create trigger enforce_lvc_email
   before insert on auth.users
   for each row execute function public.enforce_lvc_email();
 
--- 3. Claims ------------------------------------------------------------------
+-- 3. Employee profiles (created on "Create account") ---------------------------
+create table if not exists public.profiles (
+  user_id     uuid primary key default auth.uid() references auth.users (id) on delete cascade,
+  email       text not null,
+  full_name   text not null,
+  department  text not null,
+  phone       text,
+  created_at  timestamptz not null default now(),
+  updated_at  timestamptz not null default now()
+);
+alter table public.profiles enable row level security;
+
+drop policy if exists "profiles: read own or admin" on public.profiles;
+create policy "profiles: read own or admin" on public.profiles
+  for select to authenticated
+  using (user_id = auth.uid() or public.is_admin());
+
+drop policy if exists "profiles: create own" on public.profiles;
+create policy "profiles: create own" on public.profiles
+  for insert to authenticated
+  with check (user_id = auth.uid() and lower(email) = lower(auth.jwt() ->> 'email'));
+
+drop policy if exists "profiles: update own" on public.profiles;
+create policy "profiles: update own" on public.profiles
+  for update to authenticated
+  using (user_id = auth.uid())
+  with check (user_id = auth.uid() and lower(email) = lower(auth.jwt() ->> 'email'));
+
+-- 4. Claims ------------------------------------------------------------------
 create table if not exists public.claims (
   id            uuid primary key default gen_random_uuid(),
   ref           text not null unique,
@@ -80,7 +108,7 @@ create policy "claims: insert own" on public.claims
   );
 -- No update or delete policies: a submitted claim cannot be changed or removed from the browser.
 
--- 4. PDF storage --------------------------------------------------------------
+-- 5. PDF storage --------------------------------------------------------------
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
 values ('claim-pdfs', 'claim-pdfs', false, 52428800, array['application/pdf'])
 on conflict (id) do nothing;
