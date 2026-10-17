@@ -2,28 +2,19 @@
 -- The server runs this automatically at start-up. It is safe to run again.
 
 create table if not exists users (
-  id          uuid primary key default gen_random_uuid(),
-  email       text not null unique,          -- always stored lower-case
-  full_name   text not null,
-  department  text not null,
-  phone       text,
-  created_at  timestamptz not null default now(),
-  updated_at  timestamptz not null default now()
+  id             uuid primary key default gen_random_uuid(),
+  email          text not null unique,          -- always stored lower-case
+  full_name      text not null,
+  department     text not null,
+  phone          text,
+  password_hash  text,                           -- scrypt; never the password itself
+  created_at     timestamptz not null default now(),
+  updated_at     timestamptz not null default now()
 );
+alter table users add column if not exists password_hash text;
 
--- One-time sign-in codes. Only a hash of each code is stored.
-create table if not exists login_codes (
-  id          bigserial primary key,
-  email       text not null,
-  code_hash   text not null,
-  purpose     text not null check (purpose in ('signin', 'signup')),
-  profile     jsonb,                          -- name/department/phone given on "Create account"
-  attempts    int not null default 0,
-  used_at     timestamptz,
-  expires_at  timestamptz not null,
-  created_at  timestamptz not null default now()
-);
-create index if not exists login_codes_email_idx on login_codes (email, created_at desc);
+-- Email sign-in codes are no longer used.
+drop table if exists login_codes;
 
 -- Signed-in browsers. Only a hash of each session token is stored.
 create table if not exists sessions (

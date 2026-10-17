@@ -2,31 +2,24 @@
 // Serves the claim form and a small JSON API backed by PostgreSQL (Railway).
 //
 // Environment variables:
-//   DATABASE_URL     PostgreSQL connection string (Railway provides it)        required
-//   ADMIN_EMAILS     comma-separated admin emails      default: wenqi@lvc-ecopack.com
-//   EMAIL_DOMAIN     only this email domain can register   default: lvc-ecopack.com
-//   CODE_SECRET      long random string used when hashing sign-in codes      recommended
-//   MAIL_FROM        sender for sign-in code emails
-//   RESEND_API_KEY   send emails through Resend (works on every Railway plan)
-//   SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS   or send through SMTP (Railway Pro plan only)
-//   With no email settings, codes are written to the server log (for setup and testing only).
+//   DATABASE_URL   PostgreSQL connection string (Railway provides it)        required
+//   ADMIN_EMAILS   comma-separated admin emails      default: wenqi@lvc-ecopack.com
+//   EMAIL_DOMAIN   only this email domain can register   default: lvc-ecopack.com
 
 import express from "express";
 import pg from "pg";
-import nodemailer from "nodemailer";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || 8080);
 const EMAIL_DOMAIN = (process.env.EMAIL_DOMAIN || "lvc-ecopack.com").trim().toLowerCase();
 const ADMIN_EMAILS = new Set((process.env.ADMIN_EMAILS || "wenqi@lvc-ecopack.com").split(",").map(s => s.trim().toLowerCase()).filter(Boolean));
-const CODE_SECRET = process.env.CODE_SECRET || "";
 const SESSION_DAYS = 30;
-const CODE_MINUTES = 10;
-const MAX_CODE_TRIES = 5;
+const MIN_PASSWORD = 8;
 const MAX_PDF_BYTES = 50 * 1024 * 1024;
 const COOKIE = "lvc_session";
 
@@ -40,52 +33,53 @@ const pool = new pg.Pool({
   max: 10,
 });
 
-// ---------- email ----------
-const smtp = process.env.SMTP_HOST ? nodemailer.createTransport({
-  host: process.env.SMTP_HOST,
-  port: Number(process.env.SMTP_PORT || 587),
-  secure: Number(process.env.SMTP_PORT || 587) === 465,
-  auth: process.env.SMTP_USER ? { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS } : undefined,
-}) : null;
-const MAIL_FROM = process.env.MAIL_FROM || (process.env.RESEND_API_KEY ? "LVC Petty Cash <onboarding@resend.dev>" : `LVC Petty Cash <no-reply@${EMAIL_DOMAIN}>`);
-
-async function sendMail({ to, subject, text, html }) {
-  if (process.env.RESEND_API_KEY) {
-    const r = await fetch("https://api.resend.com/emails", {
-      method: "POST",
-      headers: { Authorization: `Bearer ${process.env.RESEND_API_KEY}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ from: MAIL_FROM, to: [to], subject, text, html }),
-    });
-    if (!r.ok) throw new Error(`Resend ${r.status}: ${await r.text()}`);
-    return;
-  }
-  if (smtp) { await smtp.sendMail({ from: MAIL_FROM, to, subject, text, html }); return; }
-  console.warn(`[email not configured] To ${to} | ${subject} | ${text}`);
+// ---------- passwords (scrypt, built into Node) ----------
+const scrypt = promisify(crypto.scrypt);
+const SCRYPT = { N: 16384, r: 8, p: 1, maxmem: 64 * 1024 * 1024 };
+async function hashPassword(pw) {
+  const salt = crypto.randomBytes(16);
+  const key = await scrypt(pw, salt, 64, SCRYPT);
+  return `scrypt$${SCRYPT.N}$${SCRYPT.r}$${SCRYPT.p}$${salt.toString("base64")}$${key.toString("base64")}`;
+}
+async function checkPassword(pw, stored) {
+  if (!stored) return false;
+  const [kind, N, r, p, salt, key] = stored.split("$");
+  if (kind !== "scrypt") return false;
+  const expected = Buffer.from(key, "base64");
+  const got = await scrypt(pw, Buffer.from(salt, "base64"), expected.length, { N: +N, r: +r, p: +p, maxmem: SCRYPT.maxmem });
+  return crypto.timingSafeEqual(got, expected);
+}
+// A readable temporary password for admin resets, e.g. "lvc-7kq4-m2xp".
+function tempPassword() {
+  const a = "abcdefghjkmnpqrstuvwxyz23456789";
+  const part = () => Array.from({ length: 4 }, () => a[crypto.randomInt(a.length)]).join("");
+  return `lvc-${part()}-${part()}`;
 }
 
-function codeEmail(code, purpose) {
-  const signup = purpose === "signup";
-  const subject = signup ? "Confirm your LVC Petty Cash account" : "Your LVC Petty Cash sign-in code";
-  const lead = signup ? "Enter this code to confirm your email and create your account:" : "Your sign-in code is:";
-  const text = `${lead} ${code}\n\nIt expires in ${CODE_MINUTES} minutes. If you didn't ask for this, ignore this email.`;
-  const html = `<div style="font-family:'Segoe UI',Arial,sans-serif;color:#2B2E26;max-width:480px">
-    <div style="font-weight:700;letter-spacing:.14em;color:#5E7A14;font-size:20px">LVC</div>
-    <div style="font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:#6B6E66">Finance · Petty Cash</div>
-    <p style="margin:24px 0 8px">${lead}</p>
-    <p style="font-family:Consolas,monospace;font-size:30px;letter-spacing:6px;margin:0 0 16px;color:#2B2E26"><b>${code}</b></p>
-    <p style="color:#6B6E66;font-size:13px">It expires in ${CODE_MINUTES} minutes. If you didn't ask for this, ignore this email.</p>
-  </div>`;
-  return { subject, text, html };
+// Slow down password guessing: 10 failed sign-ins per email per 15 minutes.
+const failures = new Map();
+const FAIL_WINDOW = 15 * 60 * 1000, FAIL_LIMIT = 10;
+function tooManyFailures(email) {
+  const f = failures.get(email);
+  return f && Date.now() - f.first < FAIL_WINDOW && f.count >= FAIL_LIMIT;
+}
+function noteFailure(email) {
+  const f = failures.get(email);
+  if (!f || Date.now() - f.first > FAIL_WINDOW) failures.set(email, { first: Date.now(), count: 1 });
+  else f.count++;
 }
 
 // ---------- helpers ----------
 const sha256 = s => crypto.createHash("sha256").update(s).digest("hex");
-const hashCode = (email, code) => sha256(`${CODE_SECRET}:${email}:${code}`);
 const normEmail = s => String(s || "").trim().toLowerCase();
 const isCompanyEmail = e => /^[^\s@]+@[^\s@]+$/.test(e) && e.endsWith("@" + EMAIL_DOMAIN);
 const str = (v, max) => String(v ?? "").trim().slice(0, max);
 const isDate = s => /^\d{4}-\d{2}-\d{2}$/.test(s) && !Number.isNaN(Date.parse(s + "T00:00:00Z"));
 const isAdmin = u => ADMIN_EMAILS.has(u.email);
+function checkNewPassword(pw) {
+  if (typeof pw !== "string" || pw.length < MIN_PASSWORD) throw new HttpError(400, `Use a password of at least ${MIN_PASSWORD} characters.`);
+  if (pw.length > 200) throw new HttpError(400, "That password is too long.");
+}
 
 class HttpError extends Error { constructor(status, msg) { super(msg); this.status = status; } }
 const wrap = fn => (req, res, next) => fn(req, res, next).catch(next);
@@ -102,6 +96,12 @@ function setSessionCookie(req, res, token, maxAgeSec) {
   const secure = req.secure ? "; Secure" : "";
   res.setHeader("Set-Cookie", `${COOKIE}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAgeSec}${secure}`);
 }
+async function startSession(req, res, userId) {
+  const token = crypto.randomBytes(32).toString("base64url");
+  await pool.query(`insert into sessions (token_hash, user_id, expires_at) values ($1, $2, now() + make_interval(days => $3::int))`,
+    [sha256(token), userId, SESSION_DAYS]);
+  setSessionCookie(req, res, token, SESSION_DAYS * 86400);
+}
 
 async function currentUser(req) {
   const token = readCookie(req, COOKIE);
@@ -114,6 +114,10 @@ async function currentUser(req) {
 const auth = fn => wrap(async (req, res, next) => {
   req.user = await currentUser(req);
   if (!req.user) throw new HttpError(401, "Your session has ended. Please sign in again.");
+  return fn(req, res, next);
+});
+const adminOnly = fn => auth(async (req, res, next) => {
+  if (!isAdmin(req.user)) throw new HttpError(403, "Only admins can do this.");
   return fn(req, res, next);
 });
 
@@ -150,66 +154,37 @@ app.use(express.json({ limit: "75mb" }));
 
 app.get("/healthz", wrap(async (req, res) => { await pool.query("select 1"); res.send("ok"); }));
 
-// ----- sign-in -----
-app.post("/api/auth/request-code", wrap(async (req, res) => {
+// ----- accounts -----
+app.post("/api/auth/signup", wrap(async (req, res) => {
   const email = normEmail(req.body.email);
   if (!isCompanyEmail(email)) throw new HttpError(400, `Use your company email address ending in @${EMAIL_DOMAIN}.`);
-  const existing = (await pool.query("select id from users where email = $1", [email])).rows[0];
-  let purpose = req.body.mode === "signup" ? "signup" : "signin";
-  if (purpose === "signin" && !existing) throw new HttpError(404, "There's no account for this email yet. Choose Create account to register.");
-  let profile = null;
-  if (existing) purpose = "signin";
-  else {
-    const p = req.body.profile || {};
-    profile = { full_name: str(p.fullName, 120), department: str(p.department, 80), phone: str(p.phone, 40) || null };
-    if (!profile.full_name || !profile.department) throw new HttpError(400, "Enter your full name and department.");
-  }
-
-  const recent = (await pool.query(
-    `select count(*)::int as n, max(created_at) as last from login_codes where email = $1 and created_at > now() - interval '1 hour'`, [email])).rows[0];
-  if (recent.n >= 6) throw new HttpError(429, "Too many codes requested. Wait a while, then try again.");
-  if (recent.last && Date.now() - new Date(recent.last).getTime() < 30_000) throw new HttpError(429, "A code was just sent. Wait 30 seconds before asking for another.");
-
-  const code = String(crypto.randomInt(0, 1_000_000)).padStart(6, "0");
-  await pool.query("update login_codes set used_at = now() where email = $1 and used_at is null", [email]);
-  await pool.query(
-    `insert into login_codes (email, code_hash, purpose, profile, expires_at) values ($1, $2, $3, $4, now() + make_interval(mins => $5::int))`,
-    [email, hashCode(email, code), purpose, profile, CODE_MINUTES]);
-  try { await sendMail({ to: email, ...codeEmail(code, purpose) }); }
-  catch (err) { console.error("Email failed:", err.message); throw new HttpError(502, "The code couldn't be sent. Try again in a minute."); }
-  res.json({ ok: true, mode: purpose });
+  const fullName = str(req.body.fullName, 120), department = str(req.body.department, 80), phone = str(req.body.phone, 40) || null;
+  if (!fullName || !department) throw new HttpError(400, "Enter your full name and department.");
+  checkNewPassword(req.body.password);
+  const hash = await hashPassword(req.body.password);
+  const { rows } = await pool.query(
+    `insert into users (email, full_name, department, phone, password_hash) values ($1, $2, $3, $4, $5)
+     on conflict (email) do update
+       set full_name = excluded.full_name, department = excluded.department, phone = excluded.phone,
+           password_hash = excluded.password_hash, updated_at = now()
+       where users.password_hash is null   -- accounts made with the old email codes have no password yet
+     returning *`, [email, fullName, department, phone, hash]);
+  if (!rows[0]) throw new HttpError(409, "An account with this email already exists. Choose Sign in, or ask the admin to reset your password.");
+  await startSession(req, res, rows[0].id);
+  res.status(201).json(profileOut(rows[0]));
 }));
 
-app.post("/api/auth/verify", wrap(async (req, res) => {
+app.post("/api/auth/login", wrap(async (req, res) => {
   const email = normEmail(req.body.email);
-  const code = String(req.body.code || "").replace(/\D/g, "");
-  const wrong = "That code is wrong or has expired. Check the latest email, or send a new code.";
-  const row = (await pool.query(
-    `select * from login_codes where email = $1 and used_at is null and expires_at > now() order by created_at desc limit 1`, [email])).rows[0];
-  if (!row || code.length !== 6) throw new HttpError(400, wrong);
-  if (row.attempts >= MAX_CODE_TRIES) {
-    await pool.query("update login_codes set used_at = now() where id = $1", [row.id]);
-    throw new HttpError(400, "Too many wrong tries. Send a new code.");
+  const password = String(req.body.password || "");
+  if (tooManyFailures(email)) throw new HttpError(429, "Too many wrong passwords. Wait 15 minutes, or ask the admin to reset your password.");
+  const user = (await pool.query("select * from users where email = $1", [email])).rows[0];
+  if (!user || !(await checkPassword(password, user.password_hash))) {
+    noteFailure(email);
+    throw new HttpError(401, "Email or password is incorrect.");
   }
-  const ok = crypto.timingSafeEqual(Buffer.from(hashCode(email, code)), Buffer.from(row.code_hash));
-  if (!ok) {
-    await pool.query("update login_codes set attempts = attempts + 1 where id = $1", [row.id]);
-    throw new HttpError(400, wrong);
-  }
-  await pool.query("update login_codes set used_at = now() where id = $1", [row.id]);
-
-  let user = (await pool.query("select * from users where email = $1", [email])).rows[0];
-  if (!user) {
-    if (row.purpose !== "signup" || !row.profile) throw new HttpError(400, "There's no account for this email yet. Choose Create account to register.");
-    const p = row.profile;
-    user = (await pool.query(
-      `insert into users (email, full_name, department, phone) values ($1, $2, $3, $4)
-       on conflict (email) do update set email = excluded.email returning *`,
-      [email, p.full_name, p.department, p.phone])).rows[0];
-  }
-  const token = crypto.randomBytes(32).toString("base64url");
-  await pool.query(`insert into sessions (token_hash, user_id, expires_at) values ($1, $2, now() + interval '${SESSION_DAYS} days')`, [sha256(token), user.id]);
-  setSessionCookie(req, res, token, SESSION_DAYS * 86400);
+  failures.delete(email);
+  await startSession(req, res, user.id);
   res.json(profileOut(user));
 }));
 
@@ -222,13 +197,36 @@ app.post("/api/auth/logout", wrap(async (req, res) => {
 
 app.get("/api/me", auth(async (req, res) => res.json(profileOut(req.user))));
 
-app.put("/api/profile", auth(async (req, res) => {
-  const p = { full_name: str(req.body.fullName, 120), department: str(req.body.department, 80), phone: str(req.body.phone, 40) || null };
-  if (!p.full_name || !p.department) throw new HttpError(400, "Enter your full name and department.");
-  const u = (await pool.query(
-    `update users set full_name = $2, department = $3, phone = $4, updated_at = now() where id = $1 returning *`,
-    [req.user.id, p.full_name, p.department, p.phone])).rows[0];
-  res.json(profileOut(u));
+app.post("/api/auth/password", auth(async (req, res) => {
+  if (!(await checkPassword(String(req.body.current || ""), req.user.password_hash))) throw new HttpError(400, "Your current password is incorrect.");
+  checkNewPassword(req.body.password);
+  await pool.query("update users set password_hash = $2, updated_at = now() where id = $1", [req.user.id, await hashPassword(req.body.password)]);
+  // Sign out every other browser.
+  const token = readCookie(req, COOKIE);
+  await pool.query("delete from sessions where user_id = $1 and token_hash <> $2", [req.user.id, sha256(token || "")]);
+  res.json({ ok: true });
+}));
+
+// ----- admin: employee accounts -----
+app.get("/api/admin/users", adminOnly(async (req, res) => {
+  const { rows } = await pool.query(
+    `select u.email, u.full_name, u.department, u.phone, u.created_at,
+            count(c.id)::int as claims, coalesce(sum(c.total_cents), 0)::bigint as total_cents
+       from users u left join claims c on c.user_id = u.id
+      group by u.id order by u.full_name`);
+  res.json(rows.map(r => ({ email: r.email, fullName: r.full_name, department: r.department, phone: r.phone,
+    createdAt: r.created_at, claims: r.claims, total: Number(r.total_cents), isAdmin: ADMIN_EMAILS.has(r.email) })));
+}));
+
+app.post("/api/admin/users/reset-password", adminOnly(async (req, res) => {
+  const email = normEmail(req.body.email);
+  const pw = tempPassword();
+  const { rows } = await pool.query("update users set password_hash = $2, updated_at = now() where email = $1 returning id",
+    [email, await hashPassword(pw)]);
+  if (!rows[0]) throw new HttpError(404, "No account with that email.");
+  await pool.query("delete from sessions where user_id = $1", [rows[0].id]);
+  failures.delete(email);
+  res.json({ email, temporaryPassword: pw });
 }));
 
 // ----- claims -----
@@ -268,7 +266,7 @@ app.post("/api/claims", auth(async (req, res) => {
        values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) returning ${CLAIM_COLUMNS}`,
       [ref, req.user.id, req.user.email, name, department, phone, purpose, b.claimDate, total,
        JSON.stringify(items), JSON.stringify(receipts), pdf, pdf.length]);
-    // Keep the employee's profile in step with the details used on their latest claim.
+    // Keep the employee's account details in step with their latest claim.
     await pool.query(`update users set full_name = $2, department = $3, phone = $4, updated_at = now() where id = $1`,
       [req.user.id, name, department, phone]);
     res.status(201).json(claimOut(rows[0]));
@@ -308,12 +306,7 @@ app.use((err, req, res, next) => {
 // ---------- start ----------
 async function start() {
   await pool.query(fs.readFileSync(path.join(__dirname, "schema.sql"), "utf8"));
-  if (!process.env.RESEND_API_KEY && !smtp) console.warn("No email provider set: sign-in codes will be written to this log. Set RESEND_API_KEY or SMTP_* before staff use the form.");
-  if (!CODE_SECRET) console.warn("CODE_SECRET is not set. Set it to a long random string.");
-  setInterval(() => {
-    pool.query("delete from sessions where expires_at < now()").catch(() => {});
-    pool.query("delete from login_codes where created_at < now() - interval '1 day'").catch(() => {});
-  }, 60 * 60 * 1000).unref();
+  setInterval(() => { pool.query("delete from sessions where expires_at < now()").catch(() => {}); }, 60 * 60 * 1000).unref();
   app.listen(PORT, () => console.log(`LVC Petty Cash running on port ${PORT}. Admins: ${[...ADMIN_EMAILS].join(", ")}`));
 }
 start().catch(err => { console.error("Start-up failed:", err); process.exit(1); });

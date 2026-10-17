@@ -349,7 +349,7 @@ input[readonly] { color: var(--muted); }
           </div>
         </div>
         <h1 id="loginTitle">Petty Cash <b>Claims</b></h1>
-        <p class="lede" id="loginLede">Sign in with your LVC email. We'll send a sign-in code to your inbox.</p>
+        <p class="lede" id="loginLede">Sign in with your LVC email and password.</p>
       </div>
 
       <div class="login-setup" id="setupNote" role="alert" hidden></div>
@@ -362,12 +362,17 @@ input[readonly] { color: var(--muted); }
       <form id="emailForm" novalidate>
         <div class="field">
           <label for="loginEmail">Company email</label>
-          <input id="loginEmail" type="email" autocomplete="email" placeholder="name@lvc-ecopack.com" required>
+          <input id="loginEmail" type="email" autocomplete="username" placeholder="name@lvc-ecopack.com" required>
+        </div>
+        <div class="field">
+          <label for="loginPassword">Password</label>
+          <input id="loginPassword" type="password" autocomplete="current-password" required>
         </div>
         <div class="login-row">
-          <button type="submit" class="btn btn-primary" id="sendCodeBtn">Send sign-in code</button>
+          <button type="submit" class="btn btn-primary" id="signinBtn">Sign in</button>
           <span>New here? <button type="button" class="linkbtn" data-auth="signup">Create an account</button></span>
         </div>
+        <p class="login-msg" style="min-height:0">Forgot your password? Ask the admin to reset it.</p>
       </form>
 
       <form id="signupForm" novalidate hidden>
@@ -387,22 +392,18 @@ input[readonly] { color: var(--muted); }
           <label for="suPhone">Phone</label>
           <input id="suPhone" type="tel" autocomplete="tel">
         </div>
+        <div class="field">
+          <label for="suPassword">Password <span class="req">*</span></label>
+          <input id="suPassword" type="password" autocomplete="new-password" minlength="8" required aria-describedby="pwHint">
+          <small class="fsize" id="pwHint">At least 8 characters.</small>
+        </div>
+        <div class="field">
+          <label for="suPassword2">Confirm password <span class="req">*</span></label>
+          <input id="suPassword2" type="password" autocomplete="new-password" required>
+        </div>
         <div class="login-row">
           <button type="submit" class="btn btn-primary" id="signupBtn">Create account</button>
           <span>Already registered? <button type="button" class="linkbtn" data-auth="signin">Sign in</button></span>
-        </div>
-      </form>
-
-      <form id="codeForm" novalidate hidden>
-        <p class="lede" style="margin:0">We sent a code to <strong id="codeEmail"></strong>. It may take a minute to arrive. Check your junk folder too.</p>
-        <div class="field">
-          <label for="loginCode">Code from the email</label>
-          <input id="loginCode" class="code-input" inputmode="numeric" autocomplete="one-time-code" maxlength="10" required>
-        </div>
-        <div class="login-row">
-          <button type="submit" class="btn btn-primary" id="verifyBtn">Sign in</button>
-          <button type="button" class="linkbtn" id="resendBtn">Send a new code</button>
-          <button type="button" class="linkbtn" id="changeEmailBtn">Use a different email</button>
         </div>
       </form>
 
@@ -447,7 +448,7 @@ input[readonly] { color: var(--muted); }
             Admin
           </button>
         </div>
-        <span class="who"><span id="whoEmail"></span> · <button type="button" class="linkbtn" id="signOutBtn">Sign out</button></span>
+        <span class="who"><span id="whoEmail"></span> · <button type="button" class="linkbtn" id="pwBtn">Change password</button> · <button type="button" class="linkbtn" id="signOutBtn">Sign out</button></span>
         <span>Claim date</span>
         <span class="mono" id="claimDateLabel"></span>
         <span style="margin-top:6px">Currency</span>
@@ -600,7 +601,37 @@ input[readonly] { color: var(--muted); }
     </div>
 
     <div id="adBody"><div class="loading">Loading claims…</div></div>
+
+    <section aria-labelledby="usersTitle" style="display:grid;gap:12px">
+      <div class="claims-head"><h4 id="usersTitle">Employee accounts</h4><span class="fsize">Reset a password when someone forgets it</span></div>
+      <div class="hempty" id="resetResult" hidden></div>
+      <div class="tbl-wrap" id="adUsers"><div class="loading">Loading accounts…</div></div>
+    </section>
   </div>
+</div>
+
+<div class="overlay" id="pwDialog" hidden>
+  <form class="dialog" role="dialog" aria-modal="true" aria-labelledby="pwTitle" id="pwForm" novalidate>
+    <h3 id="pwTitle">Change password</h3>
+    <div class="field">
+      <label for="pwCurrent">Current password</label>
+      <input id="pwCurrent" type="password" autocomplete="current-password" required>
+    </div>
+    <div class="field">
+      <label for="pwNew">New password</label>
+      <input id="pwNew" type="password" autocomplete="new-password" minlength="8" required>
+      <small class="fsize">At least 8 characters.</small>
+    </div>
+    <div class="field">
+      <label for="pwNew2">Confirm new password</label>
+      <input id="pwNew2" type="password" autocomplete="new-password" required>
+    </div>
+    <p class="login-msg" id="pwMsg" role="status"></p>
+    <div class="actions">
+      <button type="submit" class="btn btn-primary" id="pwSave">Save password</button>
+      <button type="button" class="btn btn-ghost" id="pwCancel">Cancel</button>
+    </div>
+  </form>
 </div>
 
 <div class="drawer-wrap" id="history" hidden>
@@ -1394,6 +1425,7 @@ input[readonly] { color: var(--muted); }
   $("#doneHist").addEventListener("click", () => { closeDone(); openHistory(); });
   document.addEventListener("keydown", e => {
     if (e.key !== "Escape") return;
+    if (!$("#pwDialog").hidden) { $("#pwDialog").hidden = true; return; }
     if (!$("#admin").hidden) closeAdmin();
     else if (!$("#history").hidden) closeHistory();
     else closeDone();
@@ -1403,19 +1435,17 @@ input[readonly] { color: var(--muted); }
   const loginMsg = (t, err) => { const m = $("#loginMsg"); m.textContent = t || ""; m.classList.toggle("err", !!err); };
   // The server re-checks the email domain; this is just for an early, friendly message.
   const companyRe = new RegExp(`^[^\\s@]+@${EMAIL_DOMAIN.replace(/\./g, "\\.")}$`);
-  let pendingEmail = "", pendingProfile = null, authMode = "signin", profile = null;
+  let authMode = "signin", profile = null;
 
   const LEDE = {
-    signin: "Sign in with your LVC email. We'll send a sign-in code to your inbox.",
-    signup: "Register once with your LVC email. We'll send a code to confirm the address is yours.",
+    signin: "Sign in with your LVC email and password.",
+    signup: "Register once with your LVC email and choose a password.",
   };
   function setAuthMode(m) {
     authMode = m;
     document.querySelectorAll("#authTabs [data-auth]").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.auth === m)));
-    $("#authTabs").hidden = false;
     $("#emailForm").hidden = m !== "signin";
     $("#signupForm").hidden = m !== "signup";
-    $("#codeForm").hidden = true;
     $("#loginTitle").innerHTML = m === "signup" ? "Create your <b>account</b>" : "Petty Cash <b>Claims</b>";
     $("#loginLede").textContent = LEDE[m];
     if (m === "signup" && !$("#suEmail").value) $("#suEmail").value = $("#loginEmail").value;
@@ -1443,72 +1473,111 @@ input[readonly] { color: var(--muted); }
     return ok;
   }
 
-  async function sendCode(email, mode, profileData) {
-    loginMsg("Sending code…");
-    try {
-      const r = await api("/api/auth/request-code", { method: "POST", body: { email, mode, profile: profileData } });
-      const already = mode === "signup" && r.mode === "signin";
-      authMode = r.mode;
-      loginMsg(already ? "You already have an account, so we sent you a sign-in code." : "");
-      return true;
-    } catch (err) { loginMsg(err.message, true); return false; }
-  }
-  function showCodeStep(email) {
-    pendingEmail = email;
-    $("#codeEmail").textContent = email;
-    $("#authTabs").hidden = true; $("#emailForm").hidden = true; $("#signupForm").hidden = true;
-    $("#codeForm").hidden = false;
-    $("#verifyBtn").textContent = authMode === "signup" ? "Confirm and create account" : "Sign in";
-    $("#loginCode").value = ""; $("#loginCode").focus();
-  }
-
   $("#emailForm").addEventListener("submit", async e => {
     e.preventDefault();
     const email = checkEmail($("#loginEmail")); if (!email) return;
-    pendingProfile = null;
-    const b = $("#sendCodeBtn"); b.disabled = true;
-    const ok = await sendCode(email, "signin");
-    b.disabled = false;
-    if (ok) showCodeStep(email);
+    if (!$("#loginPassword").value) { $("#loginPassword").classList.add("invalid"); loginMsg("Enter your password.", true); return; }
+    const b = $("#signinBtn"); b.disabled = true; loginMsg("Signing in…");
+    try {
+      const me = await api("/api/auth/login", { method: "POST", body: { email, password: $("#loginPassword").value } });
+      loginMsg(""); signedIn(me);
+    } catch (err) {
+      $("#loginPassword").classList.add("invalid"); loginMsg(err.message, true);
+    } finally { b.disabled = false; }
   });
   $("#signupForm").addEventListener("submit", async e => {
     e.preventDefault();
     const email = checkEmail($("#suEmail")); if (!email) return;
     if (!requireFilled(["suName", "suDept"])) { loginMsg("Enter your full name and department.", true); return; }
-    pendingProfile = { fullName: $("#suName").value.trim(), department: $("#suDept").value.trim(), phone: $("#suPhone").value.trim() };
-    const b = $("#signupBtn"); b.disabled = true;
-    const ok = await sendCode(email, "signup", pendingProfile);
-    b.disabled = false;
-    if (ok) showCodeStep(email);
-  });
-  $("#codeForm").addEventListener("submit", async e => {
-    e.preventDefault();
-    const code = $("#loginCode").value.replace(/\D/g, "");
-    if (code.length !== 6) { $("#loginCode").classList.add("invalid"); loginMsg("Enter the 6-digit code from the email.", true); return; }
-    const b = $("#verifyBtn"); b.disabled = true; loginMsg(authMode === "signup" ? "Creating your account…" : "Signing in…");
+    const pw = $("#suPassword").value;
+    if (pw.length < 8) { $("#suPassword").classList.add("invalid"); loginMsg("Use a password of at least 8 characters.", true); return; }
+    if (pw !== $("#suPassword2").value) { $("#suPassword2").classList.add("invalid"); loginMsg("The two passwords don't match.", true); return; }
+    const b = $("#signupBtn"); b.disabled = true; loginMsg("Creating your account…");
     try {
-      const me = await api("/api/auth/verify", { method: "POST", body: { email: pendingEmail, code } });
-      loginMsg(""); pendingProfile = null;
-      signedIn(me);
-    } catch (err) {
-      $("#loginCode").classList.add("invalid"); loginMsg(err.message, true);
-    } finally { b.disabled = false; }
+      const me = await api("/api/auth/signup", { method: "POST", body: {
+        email, password: pw, fullName: $("#suName").value.trim(), department: $("#suDept").value.trim(), phone: $("#suPhone").value.trim(),
+      } });
+      loginMsg(""); signedIn(me);
+    } catch (err) { loginMsg(err.message, true); }
+    finally { b.disabled = false; }
   });
-  ["loginCode", "loginEmail", "suEmail", "suName", "suDept"].forEach(id => $("#" + id).addEventListener("input", e => e.target.classList.remove("invalid")));
-  $("#resendBtn").addEventListener("click", async () => { if (await sendCode(pendingEmail, authMode, pendingProfile)) loginMsg("A new code is on its way."); });
-  $("#changeEmailBtn").addEventListener("click", () => setAuthMode(authMode));
+  ["loginEmail", "loginPassword", "suEmail", "suName", "suDept", "suPassword", "suPassword2", "pwCurrent", "pwNew", "pwNew2"]
+    .forEach(id => $("#" + id).addEventListener("input", e => e.target.classList.remove("invalid")));
   $("#signOutBtn").addEventListener("click", async () => {
     try { await api("/api/auth/logout", { method: "POST", body: {} }); } catch (_) {}
     showLogin();
   });
 
+  // ---------- change password ----------
+  const pwMsg = (t, err) => { const m = $("#pwMsg"); m.textContent = t || ""; m.classList.toggle("err", !!err); };
+  $("#pwBtn").addEventListener("click", () => {
+    ["pwCurrent", "pwNew", "pwNew2"].forEach(id => { $("#" + id).value = ""; $("#" + id).classList.remove("invalid"); });
+    pwMsg(""); $("#pwDialog").hidden = false; $("#pwCurrent").focus();
+  });
+  const closePw = () => { $("#pwDialog").hidden = true; $("#pwBtn").focus(); };
+  $("#pwCancel").addEventListener("click", closePw);
+  $("#pwForm").addEventListener("submit", async e => {
+    e.preventDefault();
+    const cur = $("#pwCurrent").value, pw = $("#pwNew").value;
+    if (!cur) { $("#pwCurrent").classList.add("invalid"); pwMsg("Enter your current password.", true); return; }
+    if (pw.length < 8) { $("#pwNew").classList.add("invalid"); pwMsg("Use a password of at least 8 characters.", true); return; }
+    if (pw !== $("#pwNew2").value) { $("#pwNew2").classList.add("invalid"); pwMsg("The two passwords don't match.", true); return; }
+    const b = $("#pwSave"); b.disabled = true; pwMsg("Saving…");
+    try {
+      await api("/api/auth/password", { method: "POST", body: { current: cur, password: pw } });
+      pwMsg("Password changed. Other browsers signed in to your account have been signed out.");
+      setTimeout(closePw, 1800);
+    } catch (err) { pwMsg(err.message, true); }
+    finally { b.disabled = false; }
+  });
+
+  // ---------- admin: employee accounts ----------
+  async function loadUsers() {
+    const box = $("#adUsers");
+    box.innerHTML = `<div class="loading">Loading accounts…</div>`;
+    let users;
+    try { users = await api("/api/admin/users"); }
+    catch (err) { box.innerHTML = `<div class="hempty">${escH(err.message)}</div>`; return; }
+    if (!users.length) { box.innerHTML = `<div class="hempty">No accounts yet.</div>`; return; }
+    box.innerHTML = `<table class="htable">
+      <thead><tr><th>Employee</th><th>Department</th><th>Joined</th><th class="r">Claims</th><th class="r">Total RM</th><th></th></tr></thead>
+      <tbody>${users.map(u => `<tr>
+        <td>${escH(u.fullName)}${u.isAdmin ? ' <span class="badge">admin</span>' : ""}<br><span class="fsize">${escH(u.email)}</span></td>
+        <td>${escH(u.department)}</td>
+        <td class="nw">${fmtDate(localDay(u.createdAt))}</td>
+        <td class="r">${u.claims}</td>
+        <td class="r">${money(u.total)}</td>
+        <td class="r"><button type="button" class="btn btn-ghost" style="padding:6px 12px;font-size:12px" data-reset="${escH(u.email)}">Reset password</button></td>
+      </tr>`).join("")}</tbody></table>`;
+  }
+  $("#adUsers").addEventListener("click", async e => {
+    const b = e.target.closest("[data-reset]"); if (!b) return;
+    if (!b.dataset.armed) {
+      b.dataset.armed = "1"; b.textContent = "Click again to reset";
+      setTimeout(() => { if (b.isConnected) { delete b.dataset.armed; b.textContent = "Reset password"; } }, 3000);
+      return;
+    }
+    b.disabled = true;
+    const out = $("#resetResult");
+    try {
+      const r = await api("/api/admin/users/reset-password", { method: "POST", body: { email: b.dataset.reset } });
+      out.innerHTML = `Temporary password for <strong>${escH(r.email)}</strong>: <span class="mono" style="font-size:16px;color:var(--ink)">${escH(r.temporaryPassword)}</span><br>
+        Give it to them in person or by phone. They should sign in with it and then choose <em>Change password</em>. It is shown only once.`;
+      out.hidden = false; out.scrollIntoView({ block: "center", behavior: "smooth" });
+      b.textContent = "Password reset";
+    } catch (err) { out.textContent = err.message; out.hidden = false; b.disabled = false; b.textContent = "Reset password"; delete b.dataset.armed; }
+  });
+  $("#adminBtn").addEventListener("click", () => { $("#resetResult").hidden = true; loadUsers(); });
+  $("#adRefresh").addEventListener("click", loadUsers);
+
   function showLogin() {
     user = null; isAdmin = false; profile = null;
-    $("#app").hidden = true; $("#admin").hidden = true; $("#history").hidden = true; $("#done").hidden = true;
+    $("#app").hidden = true; $("#admin").hidden = true; $("#history").hidden = true; $("#done").hidden = true; $("#pwDialog").hidden = true;
+    $("#resetResult").hidden = true; $("#resetResult").textContent = "";
     document.body.style.overflow = "";
     $("#login").hidden = false;
     // Don't leave the last person's details on a shared computer.
-    ["loginEmail", "suEmail", "suName", "suDept", "suPhone", "loginCode"].forEach(id => $("#" + id).value = "");
+    ["loginEmail", "loginPassword", "suEmail", "suName", "suDept", "suPhone", "suPassword", "suPassword2"].forEach(id => $("#" + id).value = "");
     setAuthMode("signin");
   }
 
@@ -1516,6 +1585,7 @@ input[readonly] { color: var(--muted); }
     user = { email: me.email };
     profile = me;
     isAdmin = me.isAdmin === true;
+    ["loginPassword", "suPassword", "suPassword2"].forEach(id => $("#" + id).value = "");
     enterApp();
   }
 
