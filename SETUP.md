@@ -57,9 +57,16 @@ Then, under **Authentication > Rate Limits**, raise "emails per hour" to a comfo
 
    The anon key is meant to be public. The security rules from step 2 decide what each person can see.
 
-## 6. Share the form
-Give staff the `petty-cash-claim.html` file, for example on a shared drive, or host it on your website or intranet.
-Staff open it in Chrome or Edge, then:
+## 6. Put the form online (Railway)
+The repository is set up to run on Railway as a small website (`Dockerfile`, `Caddyfile`, `railway.json`).
+1. In Railway, click **New Project > Deploy from GitHub repo**. If asked, click **Configure GitHub App** and give Railway access to `wenqi-1006/petty-cash-claim`.
+2. Choose **wenqi-1006/petty-cash-claim**. Railway builds and deploys it, which takes a minute or two.
+3. Open the service, go to **Settings > Networking**, and click **Generate Domain**. This gives a link like `https://petty-cash-claim-production.up.railway.app`.
+4. Share that link with staff. Every push to the `main` branch on GitHub updates the site automatically.
+
+To use your own address, such as `claims.lvc-ecopack.com`: in **Settings > Networking > Custom Domain**, enter it and add the CNAME record Railway shows at your domain host.
+
+Staff open the link in Chrome or Edge, then:
 1. **First time:** choose **Create account**, enter their company email, full name, department and phone, and type in the code that's emailed to them.
 2. **After that:** choose **Sign in**, enter their company email and type in the code.
 

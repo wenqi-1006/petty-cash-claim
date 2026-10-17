@@ -1,0 +1,22 @@
+{
+	admin off
+	auto_https off
+}
+
+# Railway provides PORT; 8080 is the local fallback.
+:{$PORT:8080} {
+	root * /srv
+	encode gzip
+	file_server
+
+	# Always fetch the latest form after a deploy.
+	header /index.html Cache-Control "no-cache"
+	header / Cache-Control "no-cache"
+
+	header {
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		X-Frame-Options "DENY"
+		-Server
+	}
+}

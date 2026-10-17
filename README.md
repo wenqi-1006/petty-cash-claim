@@ -7,4 +7,5 @@ Each claim is saved with one combined PDF (the claim form followed by the receip
 |---|---|
 | `petty-cash-claim.html` | The form, a single page. Open it in Chrome or Edge. |
 | `supabase-setup.sql` | Creates the database tables, PDF storage, security rules and admin list in Supabase. |
+| `Dockerfile`, `Caddyfile`, `railway.json` | Hosting on Railway: serves the form as the site's home page. |
 | `SETUP.md` | Step-by-step setup: Supabase project, sign-in email, company SMTP, connecting the form. |
